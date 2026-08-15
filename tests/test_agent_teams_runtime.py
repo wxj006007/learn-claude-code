@@ -9,6 +9,7 @@ import threading
 import time
 import types
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest.mock import patch
 
@@ -1165,6 +1166,47 @@ class AgentTeamsRuntimeTests(unittest.TestCase):
             calls_after_delivery = len(seen_messages)
             time.sleep(1.2)
             self.assertEqual(len(seen_messages), calls_after_delivery)
+
+    def test_s15_background_results_have_one_atomic_consumer(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            lesson = load_lesson(
+                Path(tmp), ROOT / "s15_integrated_harness" / "code.py"
+            )
+
+            class CoordinatedLock:
+                def __init__(self):
+                    self.lock = threading.Lock()
+                    self.barrier = threading.Barrier(2)
+                    self.local = threading.local()
+
+                def __enter__(self):
+                    self.lock.acquire()
+                    return self
+
+                def __exit__(self, exc_type, exc_value, traceback):
+                    self.lock.release()
+                    if not getattr(self.local, "coordinated", False):
+                        self.local.coordinated = True
+                        self.barrier.wait(timeout=2.0)
+
+            lesson.background_tasks["bg_0001"] = {
+                "tool_use_id": "tool-1",
+                "command": "pytest",
+                "status": "completed",
+            }
+            lesson.background_results["bg_0001"] = "all tests passed"
+            lesson.background_lock = CoordinatedLock()
+
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                results = list(executor.map(
+                    lambda _: lesson.collect_background_results(), range(2)
+                ))
+
+            notifications = [note for batch in results for note in batch]
+            self.assertEqual(len(notifications), 1)
+            self.assertIn("all tests passed", notifications[0])
+            self.assertFalse(lesson.background_tasks)
+            self.assertFalse(lesson.background_results)
 
     def test_teammate_survives_stale_worktree_assignment(self):
         with tempfile.TemporaryDirectory() as tmp:

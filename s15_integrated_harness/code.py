@@ -2098,8 +2098,6 @@ def should_run_background(tool_name: str, tool_input: dict) -> bool:
 
 def start_background_task(block, handlers: dict) -> str:
     global _bg_counter
-    _bg_counter += 1
-    bg_id = f"bg_{_bg_counter:04d}"
     command = block.input.get("command", block.name)
     cwd, cwd_error = _agent_cwd()
 
@@ -2122,6 +2120,8 @@ def start_background_task(block, handlers: dict) -> str:
             background_results[bg_id] = str(result)
 
     with background_lock:
+        _bg_counter += 1
+        bg_id = f"bg_{_bg_counter:04d}"
         background_tasks[bg_id] = {
             "tool_use_id": block.id,
             "command": command,
@@ -2137,11 +2137,13 @@ def collect_background_results() -> list[str]:
     with background_lock:
         ready = [bg_id for bg_id, task in background_tasks.items()
                  if task["status"] in {"completed", "failed"}]
+        completed = [
+            (bg_id, background_tasks.pop(bg_id),
+             background_results.pop(bg_id, ""))
+            for bg_id in ready
+        ]
     notifications = []
-    for bg_id in ready:
-        with background_lock:
-            task = background_tasks.pop(bg_id)
-            output = background_results.pop(bg_id, "")
+    for bg_id, task, output in completed:
         summary = output[:200] if len(output) > 200 else output
         notifications.append(
             f"<task_notification>\n"
